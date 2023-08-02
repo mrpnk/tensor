@@ -1,6 +1,7 @@
 import numpy as np
 
-def readNextNumber(file) -> int:
+# Reads one number from the file, consumes exactly one extra character.
+def _readNextNumber(file) -> int:
 	num = 0
 	while True:
 		c = file.read(1)
@@ -11,32 +12,40 @@ def readNextNumber(file) -> int:
 		num = num*10+int(c)
 	return num
 
-def serialize(file, tensor : np.ndarray):
+# Writes the tensor content to an opened file
+def _serialize(file, tensor : np.ndarray):
 	s = tensor.shape
 	file.write(bytes(str(len(s))+' ',"ansi"))
 	for i in s:
 		file.write(bytes(str(i)+' ',"ansi"))
 	file.write(tensor.tobytes())
 
-# Write to file.
-def serializeAll(filename, tensorList):
-	with open(filename,"wb") as file:
-		for t in tensorList:
-			serialize(file,t)
 
-# Load from file.
+# Writes the tensor content to a binary file
+def serialize(filename, tensor : np.ndarray):
+	with open(filename,"wb") as file:
+		_serialize(file,tensor)
+
+# Writes all tensors to a binary file.
+def serializeAll(filename, tensors : list):
+	with open(filename,"wb") as file:
+		for t in tensors:
+			_serialize(file,t)
+
+
+# Loads the first tensor in a binary file.
 def deserialize(filename):
 	file = open(filename,"rb")
-	d = readNextNumber(file)
+	d = _readNextNumber(file)
 	shape=[]
 	for i in range(d):
-		s = readNextNumber(file)
+		s = _readNextNumber(file)
 		shape.append(s)
 	ret = np.fromfile(file,np.float32,-1,'').reshape(tuple(shape))
 	file.close()
 	return ret
 
-
+# Returns a list of all tensors in a binary file.
 def deserializeAll(filename):
 	ret=[]
 	file = open(filename,"rb")
@@ -54,4 +63,3 @@ def deserializeAll(filename):
 	file.close()
 	return ret
 
-#%%
