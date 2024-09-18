@@ -10,6 +10,7 @@
 #include <variant>
 #include <cassert>
 #include <filesystem>
+#include <vector>
 
 #include "timer.hpp"
 #include "fmt/format.h"
@@ -259,6 +260,7 @@ public:
 #define throw_if_out_of_bounds(bounds, index, msg)
 #endif
 
+inline int g_numAllocs = 0;
 
 class TensorData {
 	bool _owner = true;
@@ -268,6 +270,12 @@ class TensorData {
 public:
 	TensorData(){}
 	TensorData(std::nullptr_t) { }
+	// Full copy
+	TensorData(auto&& begin, auto&& end) {
+		_owner = true;
+		resize(std::distance(begin, end));
+		std::memcpy(_data, &(*begin), _size * sizeof(float));
+	}
 	// Weak copy
 	TensorData(TensorData const& other) {
 		*this = other;
@@ -313,6 +321,9 @@ public:
 			std::copy(_data, _data + _size, p);
 			delete[] _data;
 			_data = p;
+
+			g_numAllocs++;
+			//AutoTimer at(g_timer, _FUNC_);
 		}
 		_size = newSize;
 	}
@@ -322,8 +333,20 @@ public:
 		for (int i = 0; i < _size; ++i)
 			_data[i] = getValue(stateful);
 	}
+	
+	// Deep copy
 	TensorData copy() const {
-		return subset(0, _size);
+		TensorData td = *this;
+		td._capacity = _size;
+
+		td._data = new float[td._capacity];
+		std::copy(_data, _data + _size, td._data);
+		td._owner = true;
+
+		g_numAllocs++;
+		//AutoTimer at(g_timer, _FUNC_);
+
+		return td;
 	}
 
 	TensorData subset(int offsetElems, int newSize) const {
@@ -361,6 +384,7 @@ struct TensorIterator {
 // A tensor is a view on data. It can own the data or borrow it.
 class Tensor {
 	friend class Tensor;
+	friend struct fmt::formatter<Tensor>;
 
 private:
 	TensorData data;
@@ -469,17 +493,28 @@ public:
 		updateStridesFromShape();
 	}
 	// Creates a tensor for existing data.
-	Tensor(tensorShape const& s, TensorData const& h) : shape{ s }, data{ h } { // TODO move?
+	Tensor(tensorShape const& s, TensorData&& h) : shape{ s }, data{ std::forward<TensorData>(h) } { // TODO move?
 		if(!h.isnull() && s.volume() != h.size())
 			throw std::invalid_argument("The shape is not applicable to this data.");
 		updateStridesFromShape();
 	}
 
-	// Default copy and move:
+	// Creates one-dimensional tensor from float vector
+	explicit Tensor(std::vector<float> const& v) : Tensor(tensorShape{(int)v.size()},TensorData(v.begin(),v.end())) {
+	}
+	 
+	// Default shallow copy and move:
 	Tensor(Tensor const& t) = default;
 	Tensor(Tensor&& t) = default;
 	Tensor& operator=(Tensor const& other) = default;
 	Tensor& operator=(Tensor&& other) = default;
+
+	// Deep copy
+	Tensor copy() const {
+		Tensor twin = *this;
+		twin.data = data.copy();
+		return twin;
+	}
 
 	enum class resizeMode {
 		eDontAllowResize = 0,
@@ -575,6 +610,11 @@ public:
 			throw shapeError("Volumes must match.", shape, tensorShape{ td.size() });
 		data = std::forward<TensorData>(td);
 	}
+	TensorData detachData() {
+		TensorData temp = std::move(data);
+		data = TensorData();
+		return temp;
+	}
 
 	void fill(initializer const& init) {
 		auto stateful = init;
@@ -613,8 +653,14 @@ public:
 	}
 
 
+	// Copies the values TODO combine with operator=?
+	void assign(Tensor const& r) {
+		for (int i = 0; i < shape.volume(); ++i)
+			(*this)[i] = r[i];
+	}
+
 	// Returns a view on the sub-tensor for which the first index is idx0.
-	const Tensor slice(int idx0) const {
+	Tensor slice(int idx0) const {
 		auto s = shape;
 		int m = s.pop_front();
 		int n = s.volume();
@@ -804,6 +850,8 @@ public:
 	inline bool getIsDefaultStrided() const {
 		return defaultStride;
 	}
+
+	
 };
 
 template<>
@@ -811,6 +859,14 @@ auto& TensorIterator<>::operator*() {
 	return (*data)[i];
 }
 
+
+// fmt support
+template<> struct fmt::formatter<Tensor> : formatter<std::string> {
+	auto format(Tensor const& ten, format_context& ctx) {
+		auto s = ten.toString([](float value) {return fmt::format("{:> 6.2f}", value); }, ", ");
+		return formatter<std::string>::format(s, ctx);
+	}
+};
 
 
 void copy(Tensor src, Tensor dst) {
@@ -823,7 +879,7 @@ void copy(Tensor src, Tensor dst) {
 
 // Creates a new one-dimensional tensor.
 Tensor arange(int num, int firstValue = 0) {
-	Tensor t({ num });
+	Tensor t(tensorShape{ num });
 	auto d = t.getData();
 	std::iota(d.data(), d.data() + d.size(), firstValue);
 	return t;
